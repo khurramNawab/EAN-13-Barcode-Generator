@@ -189,6 +189,9 @@ function BarcodeGenerator() {
   const [excelCompanyOption, setExcelCompanyOption] = useState<"excel" | "assign">("excel");
   const [excelAssignCompanyId, setExcelAssignCompanyId] = useState("");
   const [parsedRows, setParsedRows] = useState<any[]>([]);
+  const [excelSheets, setExcelSheets] = useState<string[]>([]);
+  const [selectedExcelSheet, setSelectedExcelSheet] = useState<string>("");
+  const workbookRef = useRef<any>(null);
   const [importLoading, setImportLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -537,6 +540,126 @@ function BarcodeGenerator() {
     }
   }, [excelCompanyOption, excelAssignCompanyId, parsedRows.length]);
 
+  // Parser logic for a specific sheet's raw row objects
+  const parseSheetRows = (rawRows: any[], sheetName: string) => {
+    if (rawRows.length === 0) {
+      throw new Error(`The selected Excel sheet "${sheetName}" appears to be empty.`);
+    }
+
+    // Dynamically normalize column headers
+    const normalized = rawRows.map((row: any, idx: number) => {
+      const getValue = (keys: string[]) => {
+        const foundKey = Object.keys(row).find((k) =>
+          keys.some(
+            (key) =>
+              k.toLowerCase().replace(/[^a-z0-9]/g, "") ===
+              key.toLowerCase().replace(/[^a-z0-9]/g, "")
+          )
+        );
+        return foundKey ? String(row[foundKey]).trim() : "";
+      };
+
+      const barcodeValue = getValue([
+        "barcode", "ean13barcode", "ean13", "code", "barcodevalue", "barcodenumber", 
+        "gtin", "gtin13", "gtinnumber", "productqrbarcodeno", "productqrbarcode", 
+        "barcodeno", "qrbarcodeno", "productbarcode"
+      ]);
+      const compName = getValue(["companyname", "company", "customername", "customer", "org", "organization", "manufacturername", "manufacturer"]);
+      let panVal = getValue(["pannumber", "pan", "pancard", "companypan"]);
+      const skuVal = getValue(["productsku", "sku", "productid", "id", "skucode"]);
+      const nameVal = getValue(["productname", "product", "name", "itemname"]);
+      const descVal = getValue(["productdescription", "productdesc", "description", "desc", "itemdesc"]);
+
+      // Fallback: Generate a deterministic PAN based on company name if missing
+      if (!panVal && compName) {
+        const cleanName = compName.replace(/[^A-Z]/gi, "").toUpperCase();
+        const prefix = (cleanName + "XXXXX").substring(0, 5);
+        let hash = 0;
+        for (let i = 0; i < compName.length; i++) {
+          hash = compName.charCodeAt(i) + ((hash << 5) - hash);
+        }
+        const digits = String(Math.abs(hash) % 10000).padStart(4, "0");
+        panVal = `${prefix}${digits}Z`;
+      }
+
+      return {
+        rowNumber: idx + 2, // Excel rows are 1-based, plus header row
+        code: barcodeValue,
+        companyName: compName,
+        pan: panVal,
+        productSKU: skuVal,
+        productName: nameVal,
+        productDesc: descVal,
+        status: "pending",
+        reason: "",
+      };
+    });
+
+    // Run initial validation
+    const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/i;
+    const codeSeen = new Set<string>();
+
+    const validatedRows = normalized.map((row) => {
+      let status = "valid";
+      let reason = "";
+
+      // Validate Barcode
+      if (!row.code) {
+        status = "invalid";
+        reason = "Missing barcode code";
+      } else if (row.code.length !== 13 || !/^\d+$/.test(row.code)) {
+        status = "invalid";
+        reason = "Must be exactly 13 digits";
+      } else if (codeSeen.has(row.code)) {
+        status = "duplicate";
+        reason = "Duplicate barcode in Excel sheet";
+      } else {
+        codeSeen.add(row.code);
+      }
+
+      // If mapping from Excel, validate PAN/Company Name
+      if (status === "valid" && excelCompanyOption === "excel") {
+        if (!row.companyName) {
+          status = "invalid";
+          reason = "Missing company name";
+        } else if (!row.pan) {
+          status = "invalid";
+          reason = "Missing PAN number";
+        } else if (!panRegex.test(row.pan)) {
+          status = "invalid";
+          reason = "Invalid PAN format (AAAAA9999A)";
+        }
+      } else if (status === "valid" && excelCompanyOption === "assign") {
+        if (!excelAssignCompanyId) {
+          status = "invalid";
+          reason = "No target company selected";
+        }
+      }
+
+      return { ...row, status, reason };
+    });
+
+    setParsedRows(validatedRows);
+    setSuccessMsg(`Successfully parsed ${validatedRows.length} rows from Excel sheet "${sheetName}".`);
+  };
+
+  const handleSheetChange = (sheetName: string) => {
+    setSelectedExcelSheet(sheetName);
+    setError(null);
+    setSuccessMsg(null);
+    if (!workbookRef.current) return;
+    
+    try {
+      const worksheet = workbookRef.current.Sheets[sheetName];
+      const rawRows = XLSX.utils.sheet_to_json<any>(worksheet);
+      parseSheetRows(rawRows, sheetName);
+    } catch (err: any) {
+      console.error("Excel sheet parse error:", err);
+      setError(err.message || "Failed to parse selected sheet.");
+      setParsedRows([]);
+    }
+  };
+
   // Client-side Excel Parser
   const handleExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -550,104 +673,40 @@ function BarcodeGenerator() {
       try {
         const data = new Uint8Array(evt.target?.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: "array" });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const rawRows = XLSX.utils.sheet_to_json<any>(worksheet);
+        workbookRef.current = workbook;
 
-        if (rawRows.length === 0) {
-          throw new Error("The uploaded Excel sheet appears to be empty.");
-        }
+        const sheetNames = workbook.SheetNames;
+        setExcelSheets(sheetNames);
 
-        // Dynamically normalize column headers
-        const normalized = rawRows.map((row: any, idx: number) => {
-          const getValue = (keys: string[]) => {
-            const foundKey = Object.keys(row).find((k) =>
-              keys.some(
-                (key) =>
-                  k.toLowerCase().replace(/[^a-z0-9]/g, "") ===
-                  key.toLowerCase().replace(/[^a-z0-9]/g, "")
+        // Find best sheet containing barcode columns
+        let bestSheet = sheetNames[0];
+        for (const name of sheetNames) {
+          const ws = workbook.Sheets[name];
+          const sheetData = XLSX.utils.sheet_to_json<any>(ws, { header: 1 });
+          if (sheetData && sheetData.length > 0) {
+            const headers = sheetData[0].map((h: any) => String(h).toLowerCase().replace(/[^a-z0-9]/g, ""));
+            const hasBarcode = headers.some((h: string) =>
+              ["barcode", "ean13barcode", "ean13", "code", "barcodevalue", "barcodenumber", "gtin", "gtin13", "gtinnumber", "productqrbarcodeno", "productqrbarcode", "barcodeno", "qrbarcodeno", "productbarcode"].some(
+                (key) => h === key.replace(/[^a-z0-9]/g, "")
               )
             );
-            return foundKey ? String(row[foundKey]).trim() : "";
-          };
-
-          const barcodeValue = getValue(["barcode", "ean13barcode", "ean13", "code", "barcodevalue", "barcodenumber", "gtin", "gtin13", "gtinnumber"]);
-          const compName = getValue(["companyname", "company", "customername", "customer", "org", "organization", "manufacturername", "manufacturer"]);
-          let panVal = getValue(["pannumber", "pan", "pancard", "companypan"]);
-          const skuVal = getValue(["productsku", "sku", "productid", "id", "skucode"]);
-          const nameVal = getValue(["productname", "product", "name", "itemname"]);
-          const descVal = getValue(["productdescription", "productdesc", "description", "desc", "itemdesc"]);
-
-          // Fallback: Generate a deterministic PAN based on company name if missing
-          if (!panVal && compName) {
-            const cleanName = compName.replace(/[^A-Z]/gi, "").toUpperCase();
-            const prefix = (cleanName + "XXXXX").substring(0, 5);
-            let hash = 0;
-            for (let i = 0; i < compName.length; i++) {
-              hash = compName.charCodeAt(i) + ((hash << 5) - hash);
-            }
-            const digits = String(Math.abs(hash) % 10000).padStart(4, "0");
-            panVal = `${prefix}${digits}Z`;
-          }
-
-          return {
-            rowNumber: idx + 2, // Excel rows are 1-based, plus header row
-            code: barcodeValue,
-            companyName: compName,
-            pan: panVal,
-            productSKU: skuVal,
-            productName: nameVal,
-            productDesc: descVal,
-            status: "pending",
-            reason: "",
-          };
-        });
-
-        // Run initial validation
-        const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/i;
-        const codeSeen = new Set<string>();
-
-        const validatedRows = normalized.map((row) => {
-          let status = "valid";
-          let reason = "";
-
-          // Validate Barcode
-          if (!row.code) {
-            status = "invalid";
-            reason = "Missing barcode code";
-          } else if (row.code.length !== 13 || !/^\d+$/.test(row.code)) {
-            status = "invalid";
-            reason = "Must be exactly 13 digits";
-          } else if (codeSeen.has(row.code)) {
-            status = "duplicate";
-            reason = "Duplicate barcode in Excel sheet";
-          } else {
-            codeSeen.add(row.code);
-          }
-
-          // If mapping from Excel, validate PAN/Company Name
-          if (status === "valid" && excelCompanyOption === "excel") {
-            if (!row.companyName) {
-              status = "invalid";
-              reason = "Missing company name";
-            } else if (!row.pan) {
-              status = "invalid";
-              reason = "Missing PAN number";
-            } else if (!panRegex.test(row.pan)) {
-              status = "invalid";
-              reason = "Invalid PAN format (AAAAA9999A)";
+            if (hasBarcode) {
+              bestSheet = name;
+              break;
             }
           }
+        }
 
-          return { ...row, status, reason };
-        });
-
-        setParsedRows(validatedRows);
-        setSuccessMsg(`Successfully parsed ${validatedRows.length} rows from Excel.`);
+        setSelectedExcelSheet(bestSheet);
+        const worksheet = workbook.Sheets[bestSheet];
+        const rawRows = XLSX.utils.sheet_to_json<any>(worksheet);
+        parseSheetRows(rawRows, bestSheet);
       } catch (err: any) {
         console.error("Excel parse error:", err);
         setError(err.message || "Failed to parse Excel file. Make sure it is a valid .xlsx or .xls file.");
         setParsedRows([]);
+        setExcelSheets([]);
+        setSelectedExcelSheet("");
       }
     };
     reader.readAsArrayBuffer(file);
@@ -1639,6 +1698,32 @@ function BarcodeGenerator() {
                         </div>
                       </div>
                     </div>
+
+                    {/* Sheet Selector (if multiple sheets found) */}
+                    {excelSheets.length > 1 && (
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-center justify-between">
+                          <label htmlFor="excelSheetSelect" className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                            Select Excel Sheet *
+                          </label>
+                          <span className="text-[10px] text-blue-500 font-medium bg-blue-950/20 border border-blue-900/30 px-2 py-0.5 rounded-full">
+                            Auto-detected sheet containing barcodes
+                          </span>
+                        </div>
+                        <select
+                          id="excelSheetSelect"
+                          value={selectedExcelSheet}
+                          onChange={(e) => handleSheetChange(e.target.value)}
+                          className="bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3 py-3 text-xs text-slate-800 dark:text-slate-200 w-full focus:outline-none focus:border-blue-500"
+                        >
+                          {excelSheets.map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
 
                     {/* Preview Table */}
                     {parsedRows.length > 0 && (
