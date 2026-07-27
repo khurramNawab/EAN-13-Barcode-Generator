@@ -37,37 +37,37 @@ export async function POST(req: NextRequest) {
       companyCache.set(comp.pan.toUpperCase(), comp);
     }
 
-    // Process and find/create companies for the input rows
+    // Process unique PANs from payload to avoid repeating company check queries
+    const uniqueCompanyPayloads = new Map<string, { pan: string; name: string }>();
     for (const item of items) {
-      // Validate PAN
-      if (!item.pan || typeof item.pan !== "string") {
-        continue;
-      }
+      if (!item.pan || typeof item.pan !== "string") continue;
       const cleanPAN = item.pan.toUpperCase().trim();
-      if (!panRegex.test(cleanPAN)) {
-        continue; // Skip rows with invalid PAN in resolution
-      }
-
+      if (!panRegex.test(cleanPAN)) continue;
       const cleanName = (item.companyName || "").trim();
       if (!cleanName) continue;
 
+      uniqueCompanyPayloads.set(cleanPAN, { pan: cleanPAN, name: cleanName });
+    }
+
+    // Now resolve/create/update only for the unique companies
+    for (const [cleanPAN, data] of uniqueCompanyPayloads.entries()) {
       let company = companyCache.get(cleanPAN);
 
       if (!company) {
         // Create new company
         company = await db.company.create({
           data: {
-            name: cleanName,
+            name: data.name,
             pan: cleanPAN,
           },
         });
         // Cache it
         companyCache.set(cleanPAN, company);
-      } else if (company.name !== cleanName) {
+      } else if (company.name !== data.name) {
         // Update company name if different
         company = await db.company.update({
           where: { id: company.id },
-          data: { name: cleanName },
+          data: { name: data.name },
         });
         companyCache.set(cleanPAN, company);
       }
@@ -175,14 +175,10 @@ export async function POST(req: NextRequest) {
     });
 
     if (insertData.length > 0) {
-      // Execute as a transaction
-      await db.$transaction(
-        insertData.map((data) =>
-          db.barcode.create({
-            data,
-          })
-        )
-      );
+      // Execute as a fast batch insert to avoid timeout
+      await db.barcode.createMany({
+        data: insertData,
+      });
     }
 
     return NextResponse.json({
