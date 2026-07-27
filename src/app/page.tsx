@@ -107,6 +107,54 @@ function BarcodeGenerator() {
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedImage, setCopiedImage] = useState(false);
 
+  // Resizable split panels state & logic
+  const [leftWidth, setLeftWidth] = useState(58); // default to 58% (similar to col-span-7, which is 58.3%)
+  const [isDragging, setIsDragging] = useState(false);
+  const [isMobile, setIsMobile] = useState(true);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 1024);
+    };
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+    return () => window.removeEventListener("resize", checkMobile);
+  }, []);
+
+  const startResizing = (mouseDownEvent: React.MouseEvent) => {
+    mouseDownEvent.preventDefault();
+    setIsDragging(true);
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging || !containerRef.current) return;
+      
+      const containerRect = containerRef.current.getBoundingClientRect();
+      const newWidth = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+      
+      // Limit size between 30% and 75%
+      if (newWidth >= 30 && newWidth <= 75) {
+        setLeftWidth(newWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    if (isDragging) {
+      window.addEventListener("mousemove", handleMouseMove);
+      window.addEventListener("mouseup", handleMouseUp);
+    }
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDragging]);
+
   // History State
   const [historyBarcodes, setHistoryBarcodes] = useState<Barcode[]>([]);
   const [historyTotal, setHistoryTotal] = useState(0);
@@ -523,12 +571,24 @@ function BarcodeGenerator() {
             return foundKey ? String(row[foundKey]).trim() : "";
           };
 
-          const barcodeValue = getValue(["barcode", "ean13barcode", "ean13", "code", "barcodevalue", "barcodenumber"]);
-          const compName = getValue(["companyname", "company", "customername", "customer", "org", "organization"]);
-          const panVal = getValue(["pannumber", "pan", "pancard", "companypan"]);
+          const barcodeValue = getValue(["barcode", "ean13barcode", "ean13", "code", "barcodevalue", "barcodenumber", "gtin", "gtin13", "gtinnumber"]);
+          const compName = getValue(["companyname", "company", "customername", "customer", "org", "organization", "manufacturername", "manufacturer"]);
+          let panVal = getValue(["pannumber", "pan", "pancard", "companypan"]);
           const skuVal = getValue(["productsku", "sku", "productid", "id", "skucode"]);
           const nameVal = getValue(["productname", "product", "name", "itemname"]);
           const descVal = getValue(["productdescription", "productdesc", "description", "desc", "itemdesc"]);
+
+          // Fallback: Generate a deterministic PAN based on company name if missing
+          if (!panVal && compName) {
+            const cleanName = compName.replace(/[^A-Z]/gi, "").toUpperCase();
+            const prefix = (cleanName + "XXXXX").substring(0, 5);
+            let hash = 0;
+            for (let i = 0; i < compName.length; i++) {
+              hash = compName.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            const digits = String(Math.abs(hash) % 10000).padStart(4, "0");
+            panVal = `${prefix}${digits}Z`;
+          }
 
           return {
             rowNumber: idx + 2, // Excel rows are 1-based, plus header row
@@ -1080,9 +1140,15 @@ function BarcodeGenerator() {
       )}
 
       {/* Main Grid: Form & Output */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <div 
+        ref={containerRef}
+        className={`flex flex-col lg:flex-row gap-8 relative ${isDragging ? "select-none" : ""}`}
+      >
         {/* Left Side: Input Form */}
-        <section className="lg:col-span-7 flex flex-col gap-8">
+        <section 
+          className="flex flex-col gap-8 shrink-0 w-full"
+          style={{ width: isMobile ? "100%" : `${leftWidth}%` }}
+        >
           <div className="bg-white/80 dark:bg-slate-900/60 backdrop-blur-md border border-slate-200 dark:border-slate-850 rounded-2xl p-6 shadow-xl shadow-slate-100 dark:shadow-black/20 flex flex-col gap-6">
             {/* Tab Navigation header */}
             <div className="flex bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200 dark:border-slate-800">
@@ -1670,8 +1736,19 @@ function BarcodeGenerator() {
           </div>
         </section>
 
+        {/* Resizer Handle */}
+        <div
+          onMouseDown={startResizing}
+          className={`hidden lg:flex items-center justify-center cursor-col-resize w-2 hover:w-3 bg-slate-200/50 hover:bg-blue-500 dark:bg-slate-800/50 dark:hover:bg-blue-600 rounded-full transition-all shrink-0 self-stretch my-2 relative group ${
+            isDragging ? "bg-blue-600 dark:bg-blue-600 w-3" : ""
+          }`}
+          title="Drag to resize panels"
+        >
+          <div className="w-1 h-8 bg-slate-400 dark:bg-slate-600 rounded-full group-hover:bg-white transition-colors"></div>
+        </div>
+
         {/* Right Side: Output Panel */}
-        <section className="lg:col-span-5 flex flex-col gap-8">
+        <section className="flex flex-col gap-8 flex-1">
           <div className="bg-white/80 dark:bg-slate-900/60 backdrop-blur-md border border-slate-200 dark:border-slate-850 rounded-2xl p-6 shadow-xl shadow-slate-100 dark:shadow-black/20 flex flex-col gap-6">
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
