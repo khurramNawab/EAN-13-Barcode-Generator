@@ -570,8 +570,13 @@ function BarcodeGenerator() {
       const nameVal = getValue(["productname", "product", "name", "itemname"]);
       const descVal = getValue(["productdescription", "productdesc", "description", "desc", "itemdesc"]);
 
-      // Fallback: Generate a deterministic PAN based on company name if missing
-      if (!panVal && compName) {
+      // Fallback: Generate a deterministic PAN based on company name if missing or placeholder (e.g. "...", "---", "NA")
+      const isPlaceholder = (val: string) => {
+        const v = (val || "").trim();
+        return !v || v === "..." || v === "---" || v === "--" || v.toLowerCase() === "na" || v.toLowerCase() === "n/a";
+      };
+
+      if (isPlaceholder(panVal) && compName) {
         const cleanName = compName.replace(/[^A-Z]/gi, "").toUpperCase();
         const prefix = (cleanName + "XXXXX").substring(0, 5);
         let hash = 0;
