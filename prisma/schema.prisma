@@ -1,0 +1,42 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Company {
+  id        String        @id @default(cuid())
+  name      String
+  pan       String        @unique
+  createdAt DateTime      @default(now())
+  barcodes  Barcode[]
+  state     BarcodeState?
+}
+
+model BarcodeState {
+  companyId       String  @id
+  company         Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  currentSequence Int     @default(1)
+  currentShuffle  String  // Store as JSON string: "[4, 2, 9, 8...]"
+  overflowReset   Boolean @default(false) // Setting: false = show error, true = reset/wrap-around
+}
+
+model Barcode {
+  id            String   @id @default(cuid())
+  code          String   @unique
+  sequence      Int
+  rotatingDigit Int
+  datePart      String
+  checkDigit    Int
+  productSKU    String?
+  productName   String?
+  productDesc   String?
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt     DateTime @default(now())
+}
