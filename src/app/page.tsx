@@ -541,7 +541,7 @@ function BarcodeGenerator() {
   }, [excelCompanyOption, excelAssignCompanyId, parsedRows.length]);
 
   // Parser logic for a specific sheet's raw row objects
-  const parseSheetRows = (rawRows: any[], sheetName: string) => {
+  const parseSheetRows = (rawRows: any[], sheetName: string, headerRowIndex: number = 0) => {
     if (rawRows.length === 0) {
       throw new Error(`The selected Excel sheet "${sheetName}" appears to be empty.`);
     }
@@ -588,7 +588,7 @@ function BarcodeGenerator() {
       }
 
       return {
-        rowNumber: idx + 2, // Excel rows are 1-based, plus header row
+        rowNumber: idx + headerRowIndex + 2, // Excel rows are 1-based, plus header row
         code: barcodeValue,
         companyName: compName,
         pan: panVal,
@@ -644,6 +644,17 @@ function BarcodeGenerator() {
       return { ...row, status, reason };
     });
 
+    // Auto-switch to "Assign to One Company" if no company info is present in the Excel rows
+    const hasAnyCompanyInfo = validatedRows.some(
+      (r) => r.companyName && r.companyName.trim() !== ""
+    );
+    if (!hasAnyCompanyInfo && excelCompanyOption === "excel") {
+      setExcelCompanyOption("assign");
+      if (companies.length > 0) {
+        setExcelAssignCompanyId(companies[0].id);
+      }
+    }
+
     setParsedRows(validatedRows);
     setSuccessMsg(`Successfully parsed ${validatedRows.length} rows from Excel sheet "${sheetName}".`);
   };
@@ -656,8 +667,26 @@ function BarcodeGenerator() {
     
     try {
       const worksheet = workbookRef.current.Sheets[sheetName];
-      const rawRows = XLSX.utils.sheet_to_json<any>(worksheet);
-      parseSheetRows(rawRows, sheetName);
+      const sheetData = XLSX.utils.sheet_to_json<any>(worksheet, { header: 1 });
+      let headerRowIndex = 0;
+      const searchLimit = Math.min(sheetData.length, 20);
+      for (let i = 0; i < searchLimit; i++) {
+        const row = sheetData[i];
+        if (Array.isArray(row)) {
+          const headers = row.map((h: any) => String(h || "").toLowerCase().replace(/[^a-z0-9]/g, ""));
+          const hasBarcode = headers.some((h: string) =>
+            ["barcode", "ean13barcode", "ean13", "code", "barcodevalue", "barcodenumber", "gtin", "gtin13", "gtinnumber", "productqrbarcodeno", "productqrbarcode", "barcodeno", "qrbarcodeno", "productbarcode"].some(
+              (key) => h === key.replace(/[^a-z0-9]/g, "")
+            )
+          );
+          if (hasBarcode) {
+            headerRowIndex = i;
+            break;
+          }
+        }
+      }
+      const rawRows = XLSX.utils.sheet_to_json<any>(worksheet, { range: headerRowIndex });
+      parseSheetRows(rawRows, sheetName, headerRowIndex);
     } catch (err: any) {
       console.error("Excel sheet parse error:", err);
       setError(err.message || "Failed to parse selected sheet.");
@@ -689,12 +718,23 @@ function BarcodeGenerator() {
           const ws = workbook.Sheets[name];
           const sheetData = XLSX.utils.sheet_to_json<any>(ws, { header: 1 });
           if (sheetData && sheetData.length > 0) {
-            const headers = sheetData[0].map((h: any) => String(h).toLowerCase().replace(/[^a-z0-9]/g, ""));
-            const hasBarcode = headers.some((h: string) =>
-              ["barcode", "ean13barcode", "ean13", "code", "barcodevalue", "barcodenumber", "gtin", "gtin13", "gtinnumber", "productqrbarcodeno", "productqrbarcode", "barcodeno", "qrbarcodeno", "productbarcode"].some(
-                (key) => h === key.replace(/[^a-z0-9]/g, "")
-              )
-            );
+            let hasBarcode = false;
+            const searchLimit = Math.min(sheetData.length, 20);
+            for (let i = 0; i < searchLimit; i++) {
+              const row = sheetData[i];
+              if (Array.isArray(row)) {
+                const headers = row.map((h: any) => String(h || "").toLowerCase().replace(/[^a-z0-9]/g, ""));
+                const rowHasBarcode = headers.some((h: string) =>
+                  ["barcode", "ean13barcode", "ean13", "code", "barcodevalue", "barcodenumber", "gtin", "gtin13", "gtinnumber", "productqrbarcodeno", "productqrbarcode", "barcodeno", "qrbarcodeno", "productbarcode"].some(
+                    (key) => h === key.replace(/[^a-z0-9]/g, "")
+                  )
+                );
+                if (rowHasBarcode) {
+                  hasBarcode = true;
+                  break;
+                }
+              }
+            }
             if (hasBarcode) {
               bestSheet = name;
               break;
@@ -704,8 +744,26 @@ function BarcodeGenerator() {
 
         setSelectedExcelSheet(bestSheet);
         const worksheet = workbook.Sheets[bestSheet];
-        const rawRows = XLSX.utils.sheet_to_json<any>(worksheet);
-        parseSheetRows(rawRows, bestSheet);
+        const sheetData = XLSX.utils.sheet_to_json<any>(worksheet, { header: 1 });
+        let headerRowIndex = 0;
+        const searchLimit = Math.min(sheetData.length, 20);
+        for (let i = 0; i < searchLimit; i++) {
+          const row = sheetData[i];
+          if (Array.isArray(row)) {
+            const headers = row.map((h: any) => String(h || "").toLowerCase().replace(/[^a-z0-9]/g, ""));
+            const hasBarcode = headers.some((h: string) =>
+              ["barcode", "ean13barcode", "ean13", "code", "barcodevalue", "barcodenumber", "gtin", "gtin13", "gtinnumber", "productqrbarcodeno", "productqrbarcode", "barcodeno", "qrbarcodeno", "productbarcode"].some(
+                (key) => h === key.replace(/[^a-z0-9]/g, "")
+              )
+            );
+            if (hasBarcode) {
+              headerRowIndex = i;
+              break;
+            }
+          }
+        }
+        const rawRows = XLSX.utils.sheet_to_json<any>(worksheet, { range: headerRowIndex });
+        parseSheetRows(rawRows, bestSheet, headerRowIndex);
       } catch (err: any) {
         console.error("Excel parse error:", err);
         setError(err.message || "Failed to parse Excel file. Make sure it is a valid .xlsx or .xls file.");
@@ -1778,19 +1836,27 @@ function BarcodeGenerator() {
                                     <span>{row.productName}</span>
                                   </td>
                                   <td className="py-2 px-2 text-right">
-                                    {row.status === "valid" ? (
-                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-emerald-50 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-400 border border-emerald-250 dark:border-emerald-900">
-                                        Valid
-                                      </span>
-                                    ) : row.status === "duplicate" ? (
-                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-amber-50 dark:bg-amber-950/80 text-amber-700 dark:text-amber-400 border border-amber-250 dark:border-amber-900" title={row.reason}>
-                                        Duplicate
-                                      </span>
-                                    ) : (
-                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-red-50 dark:bg-red-950/80 text-red-700 dark:text-red-400 border border-red-250 dark:border-red-900" title={row.reason}>
-                                        Error
-                                      </span>
-                                    )}
+                                    <div className="flex flex-col items-end gap-1">
+                                      {row.status === "valid" ? (
+                                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-emerald-50 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-400 border border-emerald-250 dark:border-emerald-900">
+                                          Valid
+                                        </span>
+                                      ) : row.status === "duplicate" ? (
+                                        <>
+                                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-amber-50 dark:bg-amber-950/80 text-amber-700 dark:text-amber-400 border border-amber-250 dark:border-amber-900" title={row.reason}>
+                                            Duplicate
+                                          </span>
+                                          <span className="text-[9px] text-amber-600 dark:text-amber-400 font-medium whitespace-nowrap leading-none mt-0.5">{row.reason}</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-red-50 dark:bg-red-950/80 text-red-700 dark:text-red-400 border border-red-250 dark:border-red-900" title={row.reason}>
+                                            Error
+                                          </span>
+                                          <span className="text-[9px] text-red-500 dark:text-red-450 font-medium whitespace-nowrap leading-none mt-0.5">{row.reason}</span>
+                                        </>
+                                      )}
+                                    </div>
                                   </td>
                                 </tr>
                               ))}
