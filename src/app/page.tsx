@@ -541,9 +541,24 @@ function BarcodeGenerator() {
   }, [excelCompanyOption, excelAssignCompanyId, parsedRows.length]);
 
   // Parser logic for a specific sheet's raw row objects
-  const parseSheetRows = (rawRows: any[], sheetName: string, headerRowIndex: number = 0) => {
+  const parseSheetRows = (rawRows: any[], sheetName: string, headerRowIndex: number = 0, fileName: string = "") => {
     if (rawRows.length === 0) {
       throw new Error(`The selected Excel sheet "${sheetName}" appears to be empty.`);
+    }
+
+    // Extract default company name and deterministic PAN from Excel file name
+    let fileCompanyName = "";
+    let filePanVal = "";
+    if (fileName) {
+      fileCompanyName = fileName.replace(/\.[^/.]+$/, "").trim();
+      const cleanName = fileCompanyName.replace(/[^A-Z]/gi, "").toUpperCase();
+      const prefix = (cleanName + "XXXXX").substring(0, 5);
+      let hash = 0;
+      for (let i = 0; i < fileCompanyName.length; i++) {
+        hash = fileCompanyName.charCodeAt(i) + ((hash << 5) - hash);
+      }
+      const digits = String(Math.abs(hash) % 10000).padStart(4, "0");
+      filePanVal = `${prefix}${digits}Z`;
     }
 
     // Dynamically normalize column headers
@@ -564,7 +579,7 @@ function BarcodeGenerator() {
         "gtin", "gtin13", "gtinnumber", "productqrbarcodeno", "productqrbarcode", 
         "barcodeno", "qrbarcodeno", "productbarcode"
       ]);
-      const compName = getValue(["companyname", "company", "customername", "customer", "org", "organization", "manufacturername", "manufacturer"]);
+      let compName = getValue(["companyname", "company", "customername", "customer", "org", "organization", "manufacturername", "manufacturer"]);
       let panVal = getValue(["pannumber", "pan", "pancard", "companypan"]);
       const skuVal = getValue(["productsku", "sku", "productid", "id", "skucode"]);
       const nameVal = getValue(["productname", "product", "name", "itemname"]);
@@ -576,15 +591,30 @@ function BarcodeGenerator() {
         return !v || v === "..." || v === "---" || v === "--" || v.toLowerCase() === "na" || v.toLowerCase() === "n/a";
       };
 
-      if (isPlaceholder(panVal) && compName) {
-        const cleanName = compName.replace(/[^A-Z]/gi, "").toUpperCase();
-        const prefix = (cleanName + "XXXXX").substring(0, 5);
-        let hash = 0;
-        for (let i = 0; i < compName.length; i++) {
-          hash = compName.charCodeAt(i) + ((hash << 5) - hash);
+      // Hierarchical company name mapping:
+      // 1. Spreadsheet Row Company Name (compName)
+      // 2. Spreadsheet Row Product Name (nameVal)
+      // 3. Excel Filename (fileCompanyName)
+      if (!compName || isPlaceholder(compName)) {
+        if (nameVal && !isPlaceholder(nameVal)) {
+          compName = nameVal;
+        } else if (fileCompanyName) {
+          compName = fileCompanyName;
         }
-        const digits = String(Math.abs(hash) % 10000).padStart(4, "0");
-        panVal = `${prefix}${digits}Z`;
+      }
+
+      // If PAN is missing or placeholder, generate a deterministic PAN based on the resolved company name
+      if (!panVal || isPlaceholder(panVal)) {
+        if (compName && !isPlaceholder(compName)) {
+          const cleanName = compName.replace(/[^A-Z]/gi, "").toUpperCase();
+          const prefix = (cleanName + "XXXXX").substring(0, 5);
+          let hash = 0;
+          for (let i = 0; i < compName.length; i++) {
+            hash = compName.charCodeAt(i) + ((hash << 5) - hash);
+          }
+          const digits = String(Math.abs(hash) % 10000).padStart(4, "0");
+          panVal = `${prefix}${digits}Z`;
+        }
       }
 
       return {
@@ -686,7 +716,7 @@ function BarcodeGenerator() {
         }
       }
       const rawRows = XLSX.utils.sheet_to_json<any>(worksheet, { range: headerRowIndex });
-      parseSheetRows(rawRows, sheetName, headerRowIndex);
+      parseSheetRows(rawRows, sheetName, headerRowIndex, excelFile?.name || "");
     } catch (err: any) {
       console.error("Excel sheet parse error:", err);
       setError(err.message || "Failed to parse selected sheet.");
@@ -763,7 +793,7 @@ function BarcodeGenerator() {
           }
         }
         const rawRows = XLSX.utils.sheet_to_json<any>(worksheet, { range: headerRowIndex });
-        parseSheetRows(rawRows, bestSheet, headerRowIndex);
+        parseSheetRows(rawRows, bestSheet, headerRowIndex, file.name);
       } catch (err: any) {
         console.error("Excel parse error:", err);
         setError(err.message || "Failed to parse Excel file. Make sure it is a valid .xlsx or .xls file.");
